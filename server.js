@@ -24,18 +24,20 @@ let askedQuestions = new Set();
 let questionCount = 0;
 const totalQuestions = 3; // Total rounds of Q&A
 
-// Helper function to fetch the next question (excluding those already asked)
+// Helper function to fetch a truly random question (excluding those already asked)
 const getNextQuestion = async () => {
-  const questions = await Question.find();
-  const remainingQuestions = questions.filter(q => !askedQuestions.has(q.question));
-
-  if (remainingQuestions.length === 0) {
+  const askedArray = Array.from(askedQuestions);
+  const result = await Question.aggregate([
+    { $match: { question: { $nin: askedArray } } },
+    { $sample: { size: 1 } }
+  ]);
+  
+  if (!result.length) {
     return null;
   }
-
-  const randomQuestion = remainingQuestions[Math.floor(Math.random() * remainingQuestions.length)];
+  
+  const randomQuestion = result[0];
   askedQuestions.add(randomQuestion.question);
-
   return randomQuestion;
 };
 
@@ -56,7 +58,6 @@ app.post("/api/start", async (req, res) => {
   questionCount = 0;
 
   const greetingMessage = `Hello ${name}! Welcome to the ADAS Chat-Based Quiz. In this session, you'll tackle ${totalQuestions} questions designed to test your understanding of ADAS systems. Each question offers a unique opportunity to receive targeted feedback and improve your grasp on the topic. Let's get started!`;
-
 
   // Retrieve the first question
   const firstQuestionData = await getNextQuestion();
@@ -87,13 +88,13 @@ app.post("/api/ask", async (req, res) => {
   const startTime = Date.now();
 
   const prompt = `
-  You are an expert tutor providing concise, human-like feedback on a student's answer. Please respond in the first person as if you are directly speaking to the student. Begin your response by clearly evaluating the student's answer in terms of correctness, clarity, and completeness, using phrases like "I think" or "based on your answer." Then, in one or two additional sentences, explain what key elements or details are missing and offer brief suggestions for improvement. Avoid asking questions or adding any unnecessary commentary.
-  
-  ---
-  **Reference Answer (for your context only):** "${questionData.answer}"
-  **User's Answer:** "${userAnswer}"
-  `;
-  
+You are an expert tutor providing concise, human-like feedback on a student's answer. Please respond in the first person as if you are directly speaking to the student. Begin your response by clearly evaluating the student's answer in terms of correctness, clarity, and completeness, using phrases like "I think" or "based on your answer." Then, in one or two additional sentences, explain what key elements or details are missing and offer brief suggestions for improvement. Avoid asking questions or adding any unnecessary commentary.
+**Important:** Base your feedback strictly on the ADAS reference answer provided below. Do not include any extra information outside of the existing ADAS content.
+---
+**Reference Answer (for your context only):** "${questionData.answer}"
+**User's Answer:** "${userAnswer}"
+`;
+
   const response = await ollama.generate({
     model: process.env.OLLAMA_MODEL,
     prompt,
@@ -140,6 +141,7 @@ app.get("/api/followup", (req, res) => {
 /**
  * POST /api/followup
  * Accepts a follow-up query from the user and generates a response using the ollama model.
+ * If the question is not related to ADAS, the response indicates so.
  */
 app.post("/api/followup", async (req, res) => {
   const { query } = req.body;
@@ -148,11 +150,11 @@ app.post("/api/followup", async (req, res) => {
   }
 
   const prompt = `
-You are an expert tutor. A user has asked a follow-up question:
+You are an expert tutor with specialized knowledge in ADAS systems. A user has asked a follow-up question:
 "${query}"
-
-Please provide a clear, concise, and helpful answer.
-  `;
+Please provide a clear, concise, and helpful answer strictly based on ADAS content.
+If the question is not related to ADAS, respond with: "Your question does not appear to be related to ADAS. Please ask an ADAS-related question."
+`;
 
   const response = await ollama.generate({
     model: process.env.OLLAMA_MODEL,
