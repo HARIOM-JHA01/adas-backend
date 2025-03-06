@@ -153,7 +153,7 @@ app.post("/api/followup", async (req, res) => {
 
   const prompt = `
 You are an expert tutor. A user has asked a follow-up question:
-"${query}". If the question is related to ADAS, provide a clear and helpful answer. If the question is not related to ADAS, respond with no metion of extra adas related stuff just a polite goodbye message.
+"${query}"
 
 Please provide a clear, concise, and helpful answer.
   `;
