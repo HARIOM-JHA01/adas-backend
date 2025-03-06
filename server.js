@@ -141,7 +141,9 @@ app.get("/api/followup", (req, res) => {
 /**
  * POST /api/followup
  * Accepts a follow-up query from the user and generates a response using the ollama model.
- * If the question is not related to ADAS, the response indicates so.
+ * The prompt instructs the AI to check whether the question is related to ADAS.
+ * - If the query is ADAS related, provide a clear and helpful ADAS answer.
+ * - If not, simply respond with a goodbye message.
  */
 app.post("/api/followup", async (req, res) => {
   const { query } = req.body;
@@ -152,8 +154,9 @@ app.post("/api/followup", async (req, res) => {
   const prompt = `
 You are an expert tutor with specialized knowledge in ADAS systems. A user has asked a follow-up question:
 "${query}"
-Please provide a clear, concise, and helpful answer strictly based on ADAS content.
-If the question is not related to ADAS, respond with: "Your question does not appear to be related to ADAS. Please ask an ADAS-related question."
+Your task is to determine if this follow-up question is related to Advanced Driver Assistance Systems (ADAS).
+- If it is ADAS related, please provide a clear, concise, and helpful answer strictly based on ADAS content.
+- If it is not related to ADAS, simply respond with: "Your question does not appear to be related to ADAS. Goodbye."
 `;
 
   const response = await ollama.generate({
