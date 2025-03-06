@@ -3,66 +3,80 @@ import mongoose from "mongoose";
 import cors from "cors";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
+import morgan from "morgan";
 import ollama from "ollama";
-import Question from "./models/Question.js";  
+import Question from "./models/Question.js";
 
 dotenv.config();
 
 const app = express();
+
+// Middleware
 app.use(cors());
 app.use(bodyParser.json());
+app.use(morgan("dev")); // Logging middleware
 
 await mongoose.connect(process.env.MONGO_URI);
 console.log("Connected to the database");
 
-let askedQuestions = new Set(); // Store already asked questions
+// Global session variables
+let askedQuestions = new Set();
+let questionCount = 0;
+const totalQuestions = 3; // Total rounds of Q&A
 
-// Fetch a random question (excluding already asked ones)
+// Helper function to fetch the next question (excluding those already asked)
 const getNextQuestion = async () => {
   const questions = await Question.find();
   const remainingQuestions = questions.filter(q => !askedQuestions.has(q.question));
 
   if (remainingQuestions.length === 0) {
-    return null; // No more questions left
-  }
-
-  const randomQuestion = remainingQuestions[Math.floor(Math.random() * remainingQuestions.length)];
-  askedQuestions.add(randomQuestion.question); // Mark this question as asked
-
-  return randomQuestion;
-};
-
-app.get("/api/question", async (req, res) => {
-  const questions = await Question.find();
-  if (questions.length === 0) return res.status(404).json({ error: "No questions found." });
-
-  const remainingQuestions = questions.filter(q => !askedQuestions.has(q.question));
-
-  if (remainingQuestions.length === 0) {
-      return res.json({ message: "All questions have been asked!" });
+    return null;
   }
 
   const randomQuestion = remainingQuestions[Math.floor(Math.random() * remainingQuestions.length)];
   askedQuestions.add(randomQuestion.question);
 
-  const introMessage = "👋 Welcome to the ADAS Chat-Based Quiz! Let's get started. 🚀\n\n";
+  return randomQuestion;
+};
 
-  res.json({
-      // question: askedQuestions.size === 1 ? introMessage + randomQuestion.question : randomQuestion.question
-      question: false ? introMessage + randomQuestion.question : randomQuestion.question
-  });
-});
+/**
+ * POST /api/start
+ * Accepts the user's name, resets the session,
+ * and responds with a personalized welcome message along with the first question.
+ */
+app.post("/api/start", async (req, res) => {
+  const { name } = req.body;
+  console.log("/api/start", name);
+  if (!name) {
+    return res.status(400).json({ error: "Name is required." });
+  }
 
-  
-
-// Reset asked questions when the quiz is complete
-app.get("/api/reset", (req, res) => {
+  // Reset session state on start
   askedQuestions.clear();
-  res.json({ message: "Quiz reset. You can start again." });
+  questionCount = 0;
+
+  const greetingMessage = `Hello ${name}! Welcome to the ADAS Chat-Based Quiz. In this session, you'll tackle ${totalQuestions} questions designed to test your understanding of ADAS systems. Each question offers a unique opportunity to receive targeted feedback and improve your grasp on the topic. Let's get started!`;
+
+
+  // Retrieve the first question
+  const firstQuestionData = await getNextQuestion();
+  if (!firstQuestionData) {
+    return res.status(404).json({ error: "No questions found." });
+  }
+
+  questionCount++; // First question issued
+  res.json({ message: greetingMessage, question: firstQuestionData.question });
 });
 
-// Process user answer & provide feedback + next question
+/**
+ * POST /api/ask
+ * Accepts the user's answer for the current question,
+ * evaluates it using the ollama model, and returns feedback.
+ * If there are rounds remaining, it also sends the next question;
+ * otherwise, it indicates the end of the quiz rounds.
+ */
 app.post("/api/ask", async (req, res) => {
+  console.log("/api/ask", req.body);
   const { question, userAnswer } = req.body;
   const questionData = await Question.findOne({ question });
 
@@ -70,24 +84,74 @@ app.post("/api/ask", async (req, res) => {
     return res.status(400).json({ error: "Question not found." });
   }
 
-  // Start measuring response time
   const startTime = Date.now();
 
   const prompt = `
-  You are an expert evaluator providing feedback to a student. 
-  Evaluate the user's answer based on correctness, clarity, and completeness.
-  The correct answer is provided for your reference, but do not just compare it word-for-word. 
-  Instead, assess whether the user's response captures the key idea and provide constructive feedback. 
-  Be concise and speak in first person, as if you are a human tutor.
+  You are an expert tutor providing concise, human-like feedback on a student's answer. Please respond in the first person as if you are directly speaking to the student. Begin your response by clearly evaluating the student's answer in terms of correctness, clarity, and completeness, using phrases like "I think" or "based on your answer." Then, in one or two additional sentences, explain what key elements or details are missing and offer brief suggestions for improvement. Avoid asking questions or adding any unnecessary commentary.
   
   ---
-  **Correct Answer (Reference Only):** "${questionData.answer}"
+  **Reference Answer (for your context only):** "${questionData.answer}"
   **User's Answer:** "${userAnswer}"
+  `;
   
-  Provide a natural-sounding evaluation of the user's answer.
-  If it's correct, confirm and encourage them.
-  If it's incorrect or incomplete, provide a brief correction or suggestion without being too robotic.
-  don't end with a summary question
+  const response = await ollama.generate({
+    model: process.env.OLLAMA_MODEL,
+    prompt,
+  });
+
+  const endTime = Date.now();
+  const responseTime = endTime - startTime;
+
+  // If there are more rounds left, fetch the next question
+  if (questionCount < totalQuestions) {
+    const nextQuestionData = await getNextQuestion();
+    questionCount++;
+    if (!nextQuestionData) {
+      return res.json({
+        feedback: response.response,
+        responseTime: `${responseTime}ms`,
+        nextQuestion: "No more questions available."
+      });
+    }
+    return res.json({
+      feedback: response.response,
+      responseTime: `${responseTime}ms`,
+      nextQuestion: nextQuestionData.question
+    });
+  } else {
+    // End of quiz rounds; prompt for follow-up questions
+    return res.json({
+      feedback: response.response,
+      responseTime: `${responseTime}ms`,
+      nextStep: "The quiz rounds are complete. Do you have any additional questions or anything you'd like to know?"
+    });
+  }
+});
+
+/**
+ * GET /api/followup
+ * Returns a prompt asking if the user has any other questions or topics to discuss.
+ */
+app.get("/api/followup", (req, res) => {
+  console.log("/api/followup");
+  res.json({ prompt: "Do you have any other questions or topics you'd like to discuss?" });
+});
+
+/**
+ * POST /api/followup
+ * Accepts a follow-up query from the user and generates a response using the ollama model.
+ */
+app.post("/api/followup", async (req, res) => {
+  const { query } = req.body;
+  if (!query) {
+    return res.status(400).json({ error: "Query is required." });
+  }
+
+  const prompt = `
+You are an expert tutor. A user has asked a follow-up question:
+"${query}"
+
+Please provide a clear, concise, and helpful answer.
   `;
 
   const response = await ollama.generate({
@@ -95,17 +159,18 @@ app.post("/api/ask", async (req, res) => {
     prompt,
   });
 
-  const endTime = Date.now();
-  const responseTime = endTime - startTime; // Calculate response time in milliseconds
+  res.json({ answer: response.response });
+});
 
-  // Get the next question
-  const nextQuestion = await getNextQuestion();
-
-  res.json({
-    feedback: response.response, // AI feedback
-    responseTime: `${responseTime}ms`, // Time taken to process feedback
-    nextQuestion: nextQuestion ? nextQuestion.question : "All questions have been asked!"
-  });
+/**
+ * GET /api/reset
+ * Resets the quiz session so the user can start again.
+ */
+app.get("/api/reset", (req, res) => {
+  console.log("/api/reset");
+  askedQuestions.clear();
+  questionCount = 0;
+  res.json({ message: "Session reset. You can start the quiz again." });
 });
 
 const PORT = process.env.PORT || 5000;
